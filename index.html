@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Cave Echo Array</title>
+<style>
+:root{box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);
+--bg:#050b09;--panel:#0a1512;--line:#133a2c;--text:#b8f5d8;--dim:#4f8a73;}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace;}
+.wrap{max-width:900px;margin:0 auto;padding:12px}
+h1{font-size:15px;letter-spacing:.2em;margin:4px 0 10px;font-weight:600;color:var(--text)}
+h1 span{color:var(--dim);font-weight:400}
+.box{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+canvas{display:block;width:100%}
+#radar{aspect-ratio:16/10;cursor:crosshair;touch-action:manipulation}
+#spec{height:110px;margin-top:10px}
+.rows{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px}
+.row{padding:10px;font-size:12px;line-height:1.6;border-left:3px solid var(--c)}
+.row b{color:var(--c);font-size:13px}
+.ctl{margin-top:10px;padding:10px;font-size:12px}
+.lab{color:var(--dim);letter-spacing:.12em;font-size:11px;margin:4px 0 6px}
+.lab span{color:var(--text)}
+.btns{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:8px}
+.btns button{background:#0d1f19;color:var(--text);border:1px solid var(--line);border-radius:6px;padding:8px 0;font:inherit;cursor:pointer}
+.btns button.on{background:#14402f;border-color:#5dffb0}
+input[type=range]{width:100%;accent-color:#5dffb0}
+.hint{color:var(--dim);font-size:11px;margin-top:10px;text-align:center}
+@media (max-width:520px){.rows{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>CAVE ECHO ARRAY <span>// passive ultrasonic detector</span></h1>
+  <div class="box"><canvas id="radar"></canvas></div>
+  <div class="box" style="margin-top:10px"><canvas id="spec"></canvas></div>
+  <div class="box ctl">
+    <div class="lab">BAND (50 kHz steps) &nbsp; <span id="bandlab"></span></div>
+    <div class="btns" id="bands"></div>
+    <div class="lab">FINE TUNE &nbsp; <span id="fval"></span></div>
+    <input type="range" id="fine" step="0.5">
+  </div>
+  <div class="rows">
+    <div class="box row" id="r0" style="--c:#5dffb0"></div>
+    <div class="box row" id="r1" style="--c:#ffb454"></div>
+  </div>
+  <div class="hint">The Noibats call in the ultrasonic range, far above human hearing (20,000 Hz). Pick a band, then fine tune to lock onto a call. Not everything in this cave is a Noibat, so sweep every band. Tap the cave to make a noise and wake roosting bats.</div>
+</div>
+<script>
+const cv=document.getElementById('radar'),ctx=cv.getContext('2d');
+const sp=document.getElementById('spec'),sctx=sp.getContext('2d');
+let W,H,dpr,cave,det,caveRect;
+const PULSE_SPEED=170;
+let tune={lo:0,f:25};const BW=5;const tuned=f=>Math.abs(f-tune.f)<=BW;
+const bats=[
+ {name:'NOIBAT-A',freq:100,color:'#5dffb0',el:'r0'},
+ {name:'NOIBAT-B',freq:120,color:'#ffb454',el:'r1'}
+];
+const extras=[
+ {kind:'giant',name:'GIANT',freq:35,color:'#ff6b6b',sw:4,ox:-130,oy:10,first:5},
+ {kind:'secret',name:'???',freq:175,color:'#c792ff',sw:1.8,ox:140,oy:-40,first:20}
+];
+const creatures=bats.concat(extras);
+let pulses=[],blips=[],ripples=[],sweep=0,seed=Math.random()*10;
+const spec=creatures.map(()=>({amp:0}));
+const rnd=(a,b)=>a+Math.random()*(b-a);
+
+function size(){
+  dpr=Math.min(window.devicePixelRatio||1,2);
+  const r=cv.getBoundingClientRect();
+  W=r.width;H=r.height;cv.width=W*dpr;cv.height=H*dpr;
+  const s=sp.getBoundingClientRect();sp.width=s.width*dpr;sp.height=s.height*dpr;
+  buildCave();
+}
+function buildCave(){
+  const cx=W/2,cy=H/2,pts=[],n=90;
+  const rx=W*0.44,ry=H*0.42;
+  const ph=[seed,seed*2.3,seed*3.1,seed*1.7];
+  for(let i=0;i<n;i++){
+    const a=i/n*Math.PI*2;
+    const k=1+0.13*Math.sin(3*a+ph[0])+0.09*Math.sin(5*a+ph[1])+0.05*Math.sin(9*a+ph[2])+0.03*Math.sin(15*a+ph[3]);
+    pts.push([cx+Math.cos(a)*rx*k,cy+Math.sin(a)*ry*k]);
+  }
+  const p=new Path2D();pts.forEach((q,i)=>i?p.lineTo(q[0],q[1]):p.moveTo(q[0],q[1]));p.closePath();
+  cave={pts,path:p,cx,cy};
+  det={x:cx,y:cy+ry*0.55};
+  bats.forEach((b,i)=>{
+    if(!b.state){b.x=cx+(i?60:-60);b.y=cy-20;b.ang=rnd(0,6.28);b.state='fly';b.timer=rnd(5,9);b.next=0;b.last=0;}
+    if(!inside(b.x,b.y)){b.x=cx;b.y=cy-20}
+  });
+  extras.forEach(b=>{
+    if(b.x===undefined){b.x=cave.cx+b.ox;b.y=cave.cy+b.oy;b.ang=rnd(0,6.28);b.next=b.first;}
+    if(!inside(b.x,b.y)){b.x=cave.cx;b.y=cave.cy}
+  });
+}
+const inside=(x,y)=>{ctx.setTransform(1,0,0,1,0,0);return ctx.isPointInPath(cave.path,x*dpr,y*dpr)};
+
+function pickWall(){
+  const p=cave.pts[Math.floor(Math.random()*cave.pts.length)];
+  const dx=cave.cx-p[0],dy=cave.cy-p[1],d=Math.hypot(dx,dy);
+  return {x:p[0]+dx/d*7,y:p[1]+dy/d*7};
+}
+function updExtra(b,dt){
+  const g=b.kind==='giant';
+  b.ang+=rnd(-1,1)*dt*(g?1:1.5);
+  const v=g?rnd(12,18):rnd(8,12);
+  const nx=b.x+Math.cos(b.ang)*v*dt,ny=b.y+Math.sin(b.ang)*v*dt;
+  if(!inside(nx,ny)||!inside(nx+Math.cos(b.ang)*26,ny+Math.sin(b.ang)*26)){
+    b.ang=Math.atan2(cave.cy-b.y,cave.cx-b.x)+rnd(-0.6,0.6);
+  }else{b.x=nx;b.y=ny;}
+  b.next-=dt;
+  if(b.next<=0){emit(b);b.next=g?rnd(9,16):rnd(55,70);}
+}
+function emit(b){
+  b.chirp=b.freq+(b.kind==='giant'?rnd(-3,3):rnd(0,1.5));
+  pulses.push({x:b.x,y:b.y,r:0,bat:b,f:b.chirp,got:false,roost:b.state==='roost'});
+}
+function update(dt){
+  sweep+=dt*1.2;
+  creatures.forEach(b=>{
+    if(b.kind){updExtra(b,dt);return;}
+    b.timer-=dt;
+    if(b.state==='fly'){
+      b.ang+=rnd(-2.4,2.4)*dt;
+      const sp_=rnd(42,62);
+      let nx=b.x+Math.cos(b.ang)*sp_*dt,ny=b.y+Math.sin(b.ang)*sp_*dt;
+      if(!inside(nx,ny)||!inside(nx+Math.cos(b.ang)*14,ny+Math.sin(b.ang)*14)){
+        b.ang=Math.atan2(cave.cy-b.y,cave.cx-b.x)+rnd(-0.6,0.6);nx=b.x;ny=b.y;
+      }
+      b.x=nx;b.y=ny;
+      if(b.timer<=0){b.state='seek';b.target=pickWall();}
+      b.interval=0.45;
+    }else if(b.state==='seek'){
+      const dx=b.target.x-b.x,dy=b.target.y-b.y,d=Math.hypot(dx,dy);
+      b.ang=Math.atan2(dy,dx);
+      b.x+=dx/d*50*dt;b.y+=dy/d*50*dt;
+      b.interval=0.3;
+      if(d<3){b.state='roost';b.timer=rnd(4,8);}
+    }else{ // roost
+      b.interval=1.6;
+      if(b.timer<=0){b.state='fly';b.timer=rnd(7,13);b.ang=Math.atan2(cave.cy-b.y,cave.cx-b.x);}
+    }
+    b.next-=dt;
+    if(b.next<=0){emit(b);b.next=b.interval*rnd(0.85,1.15);}
+  });
+  pulses.forEach(p=>{
+    p.r+=PULSE_SPEED*dt;
+    const d=Math.hypot(det.x-p.x,det.y-p.y);
+    if(!p.got&&p.r>=d){
+      p.got=true;
+      const i=creatures.indexOf(p.bat);spec[i].amp=Math.min(1,spec[i].amp+(p.bat.kind?1:p.roost?0.45:0.8));
+      if(tuned(p.f)){const L=p.bat.kind==='secret'?7:p.bat.kind==='giant'?4:3;blips.push({x:p.x,y:p.y,life:L,max:L,bat:p.bat,f:p.f});p.bat.dist=d;p.bat.last=performance.now();}
+    }
+  });
+  pulses=pulses.filter(p=>p.r<Math.max(W,H)*0.9);
+  blips.forEach(b=>b.life-=dt);blips=blips.filter(b=>b.life>0);
+  ripples.forEach(r=>r.r+=260*dt);ripples=ripples.filter(r=>r.r<Math.max(W,H));
+  spec.forEach(s=>s.amp*=Math.pow(0.18,dt));
+}
+function draw(){
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.clearRect(0,0,W,H);
+  ctx.fillStyle='#030806';ctx.fillRect(0,0,W,H);
+  // cave
+  ctx.fillStyle='#07130f';ctx.fill(cave.path);
+  ctx.save();ctx.clip(cave.path);
+  // grid
+  ctx.strokeStyle='rgba(60,170,120,.13)';ctx.lineWidth=1;
+  const g=W/20;
+  ctx.beginPath();
+  for(let x=0;x<W;x+=g){ctx.moveTo(x,0);ctx.lineTo(x,H)}
+  for(let y=0;y<H;y+=g){ctx.moveTo(0,y);ctx.lineTo(W,y)}
+  ctx.stroke();
+  // range rings from detector
+  ctx.strokeStyle='rgba(60,170,120,.25)';
+  for(let r=g*3;r<W;r+=g*3){ctx.beginPath();ctx.arc(det.x,det.y,r,0,6.283);ctx.stroke()}
+  // sweep
+  const L=W;
+  const grad=ctx.createConicGradient?ctx.createConicGradient(sweep,det.x,det.y):null;
+  if(grad){grad.addColorStop(0,'rgba(93,255,176,.0)');grad.addColorStop(0.9,'rgba(93,255,176,0)');grad.addColorStop(1,'rgba(93,255,176,.12)');
+    ctx.fillStyle=grad;ctx.fillRect(0,0,W,H);}
+  ctx.strokeStyle='rgba(93,255,176,.35)';ctx.beginPath();ctx.moveTo(det.x,det.y);ctx.lineTo(det.x+Math.cos(sweep)*L,det.y+Math.sin(sweep)*L);ctx.stroke();
+  // pulses (faint true waves)
+  pulses.forEach(p=>{
+    if(!tuned(p.f))return;
+    const a=Math.max(0,1-p.r/(W*0.5))*(p.roost?0.12:0.28);
+    ctx.strokeStyle=hexA(p.bat.color,a);ctx.lineWidth=p.bat.kind==='giant'?4:1.2;
+    ctx.beginPath();ctx.arc(p.x,p.y,p.r,0,6.283);ctx.stroke();
+  });
+  ctx.restore();
+  // walls
+  ctx.strokeStyle='#2f7a5c';ctx.lineWidth=2.5;ctx.stroke(cave.path);
+  // noise ripples
+  ripples.forEach(r=>{ctx.strokeStyle=`rgba(255,255,255,${Math.max(0,.5-r.r/500)})`;ctx.lineWidth=2;ctx.beginPath();ctx.arc(r.x,r.y,r.r,0,6.283);ctx.stroke()});
+  // blips (what the array detects)
+  blips.forEach(b=>{
+    const t=b.life/b.max,R=b.bat.kind==='giant'?9:3.5;
+    ctx.fillStyle=hexA(b.bat.color,t);
+    ctx.beginPath();ctx.arc(b.x,b.y,R,0,6.283);ctx.fill();
+    ctx.strokeStyle=hexA(b.bat.color,t*0.6);ctx.lineWidth=1.2;
+    ctx.beginPath();ctx.arc(b.x,b.y,R+(1-t)*(R*4),0,6.283);ctx.stroke();
+    if(t>0.55){ctx.fillStyle=hexA(b.bat.color,t);ctx.font='10px ui-monospace,monospace';ctx.fillText((b.bat.kind==='giant'?'ROAR ':b.bat.kind==='secret'?'??? ':'')+b.f.toFixed(1)+' kHz',b.x+9,b.y-8)}
+  });
+  // detector
+  ctx.strokeStyle='#b8f5d8';ctx.lineWidth=1.5;
+  ctx.beginPath();ctx.moveTo(det.x-8,det.y+6);ctx.lineTo(det.x,det.y-8);ctx.lineTo(det.x+8,det.y+6);ctx.closePath();ctx.stroke();
+  ctx.fillStyle='#b8f5d8';ctx.font='10px ui-monospace,monospace';ctx.fillText('ARRAY',det.x-17,det.y+20);
+  drawSpec();readouts();
+}
+function hexA(h,a){const n=parseInt(h.slice(1),16);return `rgba(${n>>16},${n>>8&255},${n&255},${a})`}
+function drawSpec(){
+  const w=sp.width/dpr,h=sp.height/dpr;
+  sctx.setTransform(dpr,0,0,dpr,0,0);
+  sctx.fillStyle='#050b09';sctx.fillRect(0,0,w,h);
+  const x0=34,x1=w-10,y1=h-20,y0=10,lo=tune.lo;
+  const fx=f=>x0+(f-lo)/50*(x1-x0);
+  const a=fx(Math.max(lo,tune.f-BW)),b2=fx(Math.min(lo+50,tune.f+BW));
+  sctx.fillStyle='rgba(93,255,176,.12)';sctx.fillRect(a,y0,b2-a,y1-y0);
+  sctx.strokeStyle='rgba(60,170,120,.2)';sctx.fillStyle='#4f8a73';sctx.font='10px ui-monospace,monospace';sctx.lineWidth=1;
+  for(let f=lo;f<=lo+50;f+=10){sctx.beginPath();sctx.moveTo(fx(f),y0);sctx.lineTo(fx(f),y1);sctx.stroke();sctx.fillText(f,fx(f)-8,h-6)}
+  sctx.fillText('kHz',2,h-6);
+  sctx.strokeStyle='#5dffb0';sctx.beginPath();sctx.moveTo(fx(tune.f),y0);sctx.lineTo(fx(tune.f),y1);sctx.stroke();
+  const t=performance.now()/1000;
+  sctx.beginPath();
+  for(let x=x0;x<=x1;x+=2){
+    const f=lo+(x-x0)/(x1-x0)*50;
+    let v=0.04+0.03*Math.abs(Math.sin(x*0.37+t*9)*Math.sin(x*0.11-t*5));
+    creatures.forEach((bt,i)=>{const d=(f-bt.freq-(bt.kind==='giant'?0:0.75))/(bt.sw||1.8);v+=spec[i].amp*0.9*Math.exp(-d*d)});
+    const y=y1-Math.min(v,1)*(y1-y0);
+    x===x0?sctx.moveTo(x,y):sctx.lineTo(x,y);
+  }
+  sctx.strokeStyle='#b8f5d8';sctx.lineWidth=1.5;sctx.stroke();
+  sctx.lineTo(x1,y1);sctx.lineTo(x0,y1);sctx.fillStyle='rgba(93,255,176,.08)';sctx.fill();
+}
+function readouts(){
+  bats.forEach(b=>{
+    const el=document.getElementById(b.el);
+    const locked=b.last&&performance.now()-b.last<4000;
+    if(!locked){el.innerHTML=`<b>${b.name}</b><br>No lock at ${Math.round(tune.f*1000).toLocaleString()} Hz<br>Adjust band / fine tune to find it`;return;}
+    const ago=((performance.now()-b.last)/1000).toFixed(1)+'s ago';
+    const st={fly:'FORAGING',seek:'HEADING TO ROOST',roost:'ROOSTING (low-rate pings)'}[b.state];
+    el.innerHTML=`<b>${b.name}</b> &nbsp; ${Math.round(b.freq*1000).toLocaleString()} Hz<br>State: ${st}<br>Range: ${Math.round(b.dist/W*100)} m &nbsp; Last ping: ${ago}`;
+  });
+}
+function noise(e){
+  const r=cv.getBoundingClientRect(),x=e.clientX-r.left,y=e.clientY-r.top;
+  ripples.push({x,y,r:0});
+  bats.forEach(b=>{if(b.state==='roost'){b.state='fly';b.timer=rnd(8,12);b.ang=Math.atan2(cave.cy-b.y,cave.cx-b.x)+rnd(-.5,.5);b.next=0}});
+}
+const fine=document.getElementById('fine'),bandsEl=document.getElementById('bands');
+function setBand(lo){
+  tune.lo=lo;fine.min=lo;fine.max=lo+50;tune.f=lo+25;fine.value=tune.f;
+  [...bandsEl.children].forEach(b=>b.classList.toggle('on',+b.dataset.lo===lo));
+  updTune();
+}
+function updTune(){
+  document.getElementById('bandlab').textContent=tune.lo+'-'+(tune.lo+50)+' kHz'+(tune.lo<20?' (audible edge)':' (ultrasonic)');
+  document.getElementById('fval').textContent=(Math.round(tune.f*1000)).toLocaleString()+' Hz';
+}
+[0,50,100,150].forEach(lo=>{const b=document.createElement('button');b.textContent=lo+'-'+(lo+50);b.dataset.lo=lo;b.onclick=()=>setBand(lo);bandsEl.appendChild(b)});
+fine.oninput=()=>{tune.f=+fine.value;updTune()};
+setBand(0);
+cv.addEventListener('pointerdown',noise);
+window.addEventListener('resize',size);
+size();
+let last=performance.now();
+(function loop(now){
+  const dt=Math.min(0.05,(now-last)/1000);last=now;
+  update(dt);draw();requestAnimationFrame(loop);
+})(last);
+</script>
+</body>
+</html>
